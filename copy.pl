@@ -40,13 +40,13 @@ my $copy = do {
 		<rule: null>            NULL <.as>? <MATCH=pair>
 
 		<rule: header>          CSV ( <[MATCH=header_options]>  ** \s )
-		<token: header_options> header|<quote>|<escape>|<force_not_null>|<custom_tcsv>|<custom_pl>
+		<token: header_options> header|<quote>|<escape>|<force_not_null>|<custom_tcsv>|<custom_perl>
 		<rule: quote>           QUOTE <.as>? <MATCH=pair>
 		<rule: escape>          ESCAPE <.as>? <MATCH=pair>
 		<rule: force_not_null>  FORCE NOT NULL <MATCH=columns>
 
-		<rule: custom_tcsv>     -TCSV_<key=(\w+)> = <value=literal>
-		<rule: custom_pl>       -PERL_<key=(\w+)> = <value=literal>
+		<rule: custom_tcsv>     -TCSV_<key=(\w+)> = <value=pair>|-TCSV_<key=(\w+)>
+		<rule: custom_perl>     -PERL_<key=(\w+)> = <value=pair>|-PERL_<key=(\w+)>
 
 		<token: source>         stdin|<MATCH=literal>
 		<token: as>             AS
@@ -54,7 +54,7 @@ my $copy = do {
 		<rule: columns>         (<[MATCH=literal]> ** \,)+
 		<rule: pcolumns>        \( <MATCH=columns> \)
 
-		<rule: pair>            <delim=(\$\$|"|')> <MATCH=literal> (??{ quotemeta $MATCH{delim} })
+		<rule: pair>            <_delim=(\$\$|"|')> <MATCH=(.+?(?=(??{quotemeta $MATCH{_delim}})))> (??{ quotemeta $MATCH{_delim} })
 		<token: literal>        \S+
 	}xmsi;
 };
@@ -90,9 +90,14 @@ sub process_copy {
 
 				foreach my $opt ( @{$opt->{header}} ) {
 					given ( $opt ) {
-						when ( qr/quote/i   ) { $tcsv_args->{quote_char} = $opt->{quote} }
+						when ( qr/quote/i   ) {
+							$tcsv_args->{quote_char} = $opt->{quote};
+							# The default escape should be the quote per pg docs
+							$tcsv_args->{escape_char} //= $opt->{quote};
+						}
 						when ( qr/escape/i  ) { $tcsv_args->{escape_char} = $opt->{escape} }
-						when ( qr/tcsv/i    ) { $_=$opt->{custom_tcsv}; $tcsv_args->{$_->{key}} = $_->{value} }
+						when ( qr/tcsv/i    ) { $_=$opt->{custom_tcsv}; $tcsv_args->{$_->{key}} = $_->{value}//1 }
+						when ( qr/perl/i    ) { $_=$opt->{custom_perl}; $perl_args->{$_->{key}} = $_->{value}//1 }
 						when ( qr/header/i  ) { $perl_args->{trash_header} = 1 }
 					}
 				}
@@ -120,16 +125,30 @@ sub process_copy {
 	until ( $icsv->eof ) {
 		die $icsv->error_diag if $icsv->error_diag && ! $icsv->eof;
 		my $tuple = $icsv->getline($fh);
-		$ocsv->combine( @$tuple );
+
+
+		my @columns = @$tuple;
+		## If you want ragged you've got ragged:
+		if ( $perl_args->{input_order} ) {
+			my @index = ( $perl_args->{input_order} =~ m/\\?(\d+)\s*/g );
+			@columns = map $tuple->[$_], @index;
+		}
+		
+		if ( $perl_args->{ragged} ) {
+			if ( $copy->{from}{columns} ) {
+				splice ( @columns, scalar @{$copy->{from}{columns}} );
+			}
+		}
+		
+		$ocsv->combine( @columns );
 		say $ocsv->string;
 	}
-
-
 
 }
 
 my $sql;
-$sql = q[ \COPY table ( foo, bar, baz ) FROM cobalt.csv WITH CSV HEADER QUOTE '"' -TCSV_allow_loose_quotes = 1 ];
+$sql = q[ \COPY table ( foo, bar, baz, quz ) FROM VINPattern.txt WITH CSV HEADER QUOTE '~' -TCSV_allow_loose_quotes -PERL_ragged ];
+#$sql = q[ \COPY table ( foo, bar, baz ) FROM VINPattern.txt WITH CSV HEADER QUOTE '~' -TCSV_allow_loose_quotes -PERL_input_order = '\3 \2 \1' ];
 $sql =~ $copy;
 process_copy ( \%/ );
 
@@ -137,7 +156,7 @@ __END__
 
 =head1 NAME
 
-BirghtDog Shell - a shell for Postgresql
+BrightDog Shell - a shell for Postgresql
 
 =head2 COPY
 
