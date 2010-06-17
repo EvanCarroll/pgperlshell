@@ -173,9 +173,9 @@ BrightDog Shell - a shell for Postgresql
 
 =head1 SYOPSIS
 
-    echo "\COPY foo FROM test.txt WITH DELIMITER AS '~' CSV HEADER -PERL_HANGING' | bdshell -U username -d database
-    
-		bdshell -U username -d database -c "\COPY foo FROM test.txt WITH DELIMITER AS '~' CSV HEADER -PERL_input_order '\3 \2 \1 '
+	echo "\COPY foo FROM test.txt WITH DELIMITER AS '~' CSV HEADER -PERL_HANGING' | bdshell -U username -d database
+
+	bdshell -U username -d database -c "\COPY foo FROM test.txt WITH DELIMITER AS '~' CSV HEADER -PERL_input_order '\3 \2 \1 '
 
 =head1 DESCRIPTION
 
