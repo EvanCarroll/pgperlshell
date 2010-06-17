@@ -1,0 +1,233 @@
+#!/usr/bin/env perl
+use Carp;
+use strict;
+use warnings;
+use autodie;
+use feature ':5.10';
+
+use XXX;
+use Data::Dumper;
+use DBD::Pg;
+use Text::CSV;
+use IO::File;
+use Getopt::Long;
+use Pod::Usage;
+
+my ($un, $db, $pw, $help, $command);
+my $result = GetOptions(
+	'username|U=s'   => \$un
+	, 'dbname|d=s'   => \$db
+	, 'password|P=s' => \$pw
+	, 'command|c=s'  => \$command
+	, 'help|?'       => \$help
+);
+pod2usage(-verbose => 2) if $help;
+
+my $dbh = DBI->connect("dbi:Pg:dbname=$db", $un, $pw, {RaiseError=>1})
+	or die DBI::errstr;
+
+die 'not connected' unless $dbh->ping == 1;
+
+
+my $copy = do {
+	use Regexp::Grammars;
+	qr{
+		<action=(\\COPY)> <from>
+
+		<rule: from>              <table=literal> <columns=pcolumns>? FROM <source> WITH? (<[with=with_options]> ** \s)?
+
+		<token: with_options>     binary|oids|<delimiter>|<null>|<header>|<custom_perl>
+		<rule: custom_perl>       -PERL_<key=(\w+)> = <value=pair>|-PERL_<key=(\w+)>
+		<rule: delimiter>         DELIMITER <.as>? <MATCH=pair>
+		<rule: null>              NULL <.as>? <MATCH=pair>
+
+		<rule: header>            CSV ( <[MATCH=header_options]>  ** \s )
+		<token: header_options>   header|<quote>|<escape>|<force_not_null>|<custom_tcsv>
+
+		<rule: custom_tcsv>       -TCSV_<key=(\w+)> = <value=pair>|-TCSV_<key=(\w+)>
+		<rule: quote>             QUOTE <.as>? <MATCH=pair>
+		<rule: escape>            ESCAPE <.as>? <MATCH=pair>
+		<rule: force_not_null>    FORCE NOT NULL <MATCH=columns>
+
+		<token: source>           stdin|<MATCH=literal>
+		<token: as>               AS
+
+		<rule: columns>           (<[MATCH=literal]> ** \,)+
+		<rule: pcolumns>          \( <MATCH=columns> \)
+
+		<rule: pair>              <_delim=(\$\$|"|')> <MATCH=(.+?(?=(??{quotemeta $MATCH{_delim}})))> (??{ quotemeta $MATCH{_delim} })
+		<rule: query>             \( <MATCH=(.+?(?=(??{quotemeta $MATCH{_delim}})))> \)
+		<token: literal>          \S+
+	}xmsi;
+};
+
+while ( my $input = ( $command || <STDIN> ) ) {
+	die $input;
+	my $sql = q[ \COPY foo  FROM VINPattern.txt WITH -PERL_input_order = '\1' CSV HEADER QUOTE '~' -TCSV_allow_loose_quotes ];
+	$sql =~ $copy;
+	process_copy ( \%/ );
+}
+
+sub process_copy {
+	my $copy = shift;
+
+	my $tcsv_args = { binary => 1, blank_is_undef => 1 };
+	my $perl_args;
+
+	croak 'Invalid SQL' unless $copy->{action} =~ /COPY/;
+
+	## SQL processing
+	foreach my $opt ( @{$copy->{from}{with}} ) {
+		given ( $opt ) {
+			when ( qr/binary/i ) {
+				die 'not handeled'
+			}
+			when ( qr/oids/i ) {
+				die 'not handeled'
+			}
+			when ( qr/delimiter/i ) {
+				$tcsv_args->{sep_char} = $opt->{delimiter};
+			}
+			when ( qr/null/i ) {
+				$tcsv_args->{empty_is_undef} = 1
+					if $opt->{null}
+				;
+			}
+			when ( qr/perl/i ) {
+				$_=$opt->{custom_perl};
+				$perl_args->{$_->{key}} = $_->{value}//1
+			}
+
+			when ( qr/header/i ) {
+
+				foreach my $opt ( @{$opt->{header}} ) {
+					given ( $opt ) {
+						when ( qr/quote/i   ) {
+							$tcsv_args->{quote_char} = $opt->{quote};
+							# The default escape should be the quote per pg docs
+							$tcsv_args->{escape_char} //= $opt->{quote};
+						}
+						when ( qr/escape/i  ) { $tcsv_args->{escape_char} = $opt->{escape} }
+						when ( qr/tcsv/i    ) { $_=$opt->{custom_tcsv}; $tcsv_args->{$_->{key}} = $_->{value}//1 }
+						when ( qr/header/i  ) { $perl_args->{skip_lines} = 1 }
+						when ( qr/force_not_null/i ) {
+							## This option would be easily supported but it requires knowing columns names
+							## Even if not present in the table
+							$perl_args->{trash_header} = 1
+						}
+					}
+				}
+
+			}
+
+		}
+	}
+
+	my $icsv = Text::CSV->new($tcsv_args)
+		or die "Cannot use CSV: ".Text::CSV->error_diag()
+	;
+	my $ocsv = Text::CSV->new({binary=>1});
+
+	my $fh  = IO::File->new( $copy->{from}{source}, '<' );
+
+	$fh->getline
+		while $perl_args->{skip_lines}--
+	;
+
+	my $new_copy = sprintf (
+		q[ COPY %s %s FROM STDIN WITH CSV QUOTE AS '"' ]
+		, $copy->{from}{table}
+		, exists $copy->{from}{columns} ? '(' . join (', ', @{$copy->{from}{columns}}) . ')' : ''
+	);
+
+	$dbh->do( $new_copy );
+	while ( 1 ) {
+		my $tuple = $icsv->getline($fh);
+		last if $icsv->eof;
+		die $icsv->error_diag if $icsv->error_diag;
+
+
+		my @columns = @$tuple;
+		## If you want ragged you've got ragged:
+		if ( $perl_args->{input_order} ) {
+			my @index = ( $perl_args->{input_order} =~ m/\\?(\d+)\s*/g );
+			@columns = map $tuple->[$_], @index;
+		}
+
+		if ( $perl_args->{ragged} ) {
+			if ( $copy->{from}{columns} ) {
+				splice ( @columns, scalar @{$copy->{from}{columns}} );
+			}
+		}
+
+		$ocsv->combine( @columns );
+		$dbh->pg_putcopydata( $ocsv->string . "\n");
+	}
+	$dbh->pg_putcopyend;
+
+}
+
+__END__
+
+=head1 NAME
+
+BrightDog Shell - a shell for Postgresql
+
+=head1 SYOPSIS
+
+    echo "\COPY foo FROM test.txt WITH DELIMITER AS '~' CSV HEADER -PERL_HANGING'
+
+=head1 DESCRIPTION
+
+Above and beyond the normal COPY syntax BrightDog adds:
+
+=over 4
+
+=item
+
+all of the L<Text::CSV> syntax through B<-TCSV_key> or B<-TCSV_key = value>.
+
+=item
+
+Added perl extensions available through B<-PERL_key> or B<-PERL_key = value>. Namely, B<-PERL_hanging>, B<-PERL_skip_lines>, B<-PERL_input_ordering>.
+
+=back
+
+=head2 COPY
+
+More information can be found here: http://www.postgresql.org/docs/current/interactive/sql-copy.html
+
+	COPY tablename [ ( column [, ...] ) ]
+		FROM { 'filename' | STDIN }
+		[ [ WITH ]
+				[ BINARY ]
+				[ OIDS ]
+				[ DELIMITER [ AS ] 'delimiter' ]
+				[ NULL [ AS ] 'null string' ]
+				[ -PERL_key = value ]
+				[ -PERL_key ]
+				[ CSV [ HEADER ]
+					[ QUOTE [ AS ] 'quote' ]
+					[ ESCAPE [ AS ] 'escape' ]
+					[ FORCE NOT NULL column [, ...] ]
+					[ -TCSV_key ]
+					[ -TCSV_key = value ]
+
+	## COPY .. TO is not yet supported
+	COPY { tablename [ ( column [, ...] ) ] | ( query ) }
+		TO { 'filename' | STDOUT }
+		[ [ WITH ]
+			[ BINARY ]
+			[ OIDS ]
+			[ DELIMITER [ AS ] 'delimiter' ]
+			[ NULL [ AS ] 'null string' ]
+			[ CSV [ HEADER ]
+				[ QUOTE [ AS ] 'quote' ]
+				[ ESCAPE [ AS ] 'escape' ]
+				[ FORCE QUOTE column [, ...] ]
+
+=head1 AUTHOR
+
+Evan Carroll L<me at evancarroll.com>
+
+http://www.evancarroll.com
