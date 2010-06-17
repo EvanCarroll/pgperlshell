@@ -62,9 +62,7 @@ my $copy = do {
 };
 
 while ( my $input = ( $command || <STDIN> ) ) {
-	die $input;
-	my $sql = q[ \COPY foo  FROM VINPattern.txt WITH -PERL_input_order = '\1' CSV HEADER QUOTE '~' -TCSV_allow_loose_quotes ];
-	$sql =~ $copy;
+	$input =~ $copy;
 	process_copy ( \%/ );
 }
 
@@ -175,7 +173,9 @@ BrightDog Shell - a shell for Postgresql
 
 =head1 SYOPSIS
 
-    echo "\COPY foo FROM test.txt WITH DELIMITER AS '~' CSV HEADER -PERL_HANGING'
+    echo "\COPY foo FROM test.txt WITH DELIMITER AS '~' CSV HEADER -PERL_HANGING' | bdshell -U username -d database
+    
+		bdshell -U username -d database -c "\COPY foo FROM test.txt WITH DELIMITER AS '~' CSV HEADER -PERL_input_order '\3 \2 \1 '
 
 =head1 DESCRIPTION
 
@@ -189,7 +189,7 @@ all of the L<Text::CSV> syntax through B<-TCSV_key> or B<-TCSV_key = value>.
 
 =item
 
-Added perl extensions available through B<-PERL_key> or B<-PERL_key = value>. Namely, B<-PERL_hanging>, B<-PERL_skip_lines>, B<-PERL_input_ordering>.
+Added perl extensions available through B<-PERL_key> or B<-PERL_key = value>. Namely, B<-PERL_hanging>, B<-PERL_skip_lines>, B<-PERL_input_order>.
 
 =back
 
