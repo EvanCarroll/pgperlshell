@@ -107,7 +107,7 @@ sub process_copy {
 						}
 						when ( qr/escape/i  ) { $tcsv_args->{escape_char} = $opt->{escape} }
 						when ( qr/tcsv/i    ) { $_=$opt->{custom_tcsv}; $tcsv_args->{$_->{key}} = $_->{value}//1 }
-						when ( qr/header/i  ) { $perl_args->{skip_lines} = 1 }
+						when ( qr/header/i  ) { $perl_args->{header}=1 }
 						when ( qr/force_not_null/i ) {
 							## This option would be easily supported but it requires knowing columns names
 							## Even if not present in the table
@@ -128,10 +128,38 @@ sub process_copy {
 
 	my $fh  = IO::File->new( $copy->{from}{source}, '<' );
 
-	$fh->getline
-		while $perl_args->{skip_lines}--
-	;
+	## Discards te header row, and sets Text::CSV's column_names
+	my @header;
+	if ( $perl_args->{header} ) {
 
+		@header = $perl_args->{header_lowercase}
+			? map lc, @{$icsv->getline($fh)}
+			: @{$icsv->getline($fh)}
+		;
+		
+		$icsv->column_names( @header );
+
+		my @arr;
+		if ( $perl_args->{input_order} !~ /\\/ ) {
+			COL: foreach my $col_name ( @{[split ',\s+', $perl_args->{input_order}]} ) {
+				for ( my $i = 0; $i <= $#header; $i++ ) {
+					if ( $header[$i] eq $col_name ) {
+						push @arr, $i;
+						next COL
+					}
+				}
+				die "Failed to find column $col_name\n";
+			}
+			$perl_args->{input_order} = join ' ', map "\\$_", @arr;
+		}
+
+	}
+	
+	## Skips lines if the option is set
+	if ( $perl_args->{skip_lines} ) {
+		$fh->getline while $perl_args->{skip_lines}--;
+	}
+	
 	my $new_copy = sprintf (
 		q[ COPY %s %s FROM STDIN WITH CSV QUOTE AS '"' ]
 		, $copy->{from}{table}
@@ -139,11 +167,11 @@ sub process_copy {
 	);
 
 	$dbh->do( $new_copy );
+
 	while ( 1 ) {
 		my $tuple = $icsv->getline($fh);
 		last if $icsv->eof;
 		die $icsv->error_diag if $icsv->error_diag;
-
 
 		my @columns = @$tuple;
 		## If you want ragged you've got ragged:
@@ -160,7 +188,9 @@ sub process_copy {
 
 		$ocsv->combine( @columns );
 		$dbh->pg_putcopydata( $ocsv->string . "\n");
+		#say $ocsv->string;
 	}
+
 	$dbh->pg_putcopyend;
 
 }
@@ -173,9 +203,11 @@ BrightDog Shell - a shell for Postgresql
 
 =head1 SYOPSIS
 
-	echo "\COPY foo FROM test.txt WITH DELIMITER AS '~' CSV HEADER -PERL_HANGING' -TCSV_empty_is_undef | bdshell -U username -d database
+	echo \COPY foo FROM test.txt WITH DELIMITER AS '~' CSV HEADER -PERL_RAGGED -TCSV_empty_is_undef | \
+		bdshell -U username -d database
+	;
 
-	bdshell -U username -d database -c "\COPY foo FROM test.txt WITH DELIMITER AS '~' CSV HEADER -PERL_input_order '\3 \2 \1 '
+	bdshell -U username -d database -c "\COPY foo FROM test.txt WITH DELIMITER AS '~' CSV HEADER -PERL_input_order '\3 \2 \1'
 
 =head1 DESCRIPTION
 
@@ -185,11 +217,13 @@ Above and beyond the normal COPY syntax BrightDog adds:
 
 =item
 
-all of the L<Text::CSV> syntax through B<-TCSV_key> or B<-TCSV_key = value>.
+All of the L<Text::CSV> syntax through B<-TCSV_key> or B<-TCSV_key = value> -- B<-TCSV_allow_loose_quotes> is very useful.
 
 =item
 
 Added perl extensions available through B<-PERL_key> or B<-PERL_key = value>. Namely, B<-PERL_ragged>, B<-PERL_skip_lines>, B<-PERL_input_order>.
+
+B<-PERL_input_order> will column-backreference syntax such as C<\3 \2 \1> for the third column, followed by the second, followed by the first. This will also accept a syntax 'colname1,colname2,colname3' which will permit you to load them in the order specified with the names of the columns as they apears in the CSV header row - this format also requires HEADER to be specified.
 
 =back
 
