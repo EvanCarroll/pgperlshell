@@ -94,7 +94,8 @@ while ( my $input = ( $command || <$io> ) ) {
 
 sub process_action_set {
 	my $sql = shift;
-	$dbh->do( sprintf( 'SET %s = %s', map s/;.*//, $sql->{key}, $sql->{value} ) );
+	s/;.*// for $sql->{key}, $sql->{value};
+	$dbh->do( sprintf( 'SET %s = %s', $sql->{key}, $sql->{value} ) );
 }
 
 sub process_action_echo {
