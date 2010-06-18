@@ -13,12 +13,13 @@ use IO::File;
 use Getopt::Long;
 use Pod::Usage;
 
-my ($un, $db, $pw, $help, $command);
+my ($un, $db, $pw, $help, $command, $file);
 my $result = GetOptions(
 	'username|U=s'   => \$un
 	, 'dbname|d=s'   => \$db
 	, 'password|P=s' => \$pw
 	, 'command|c=s'  => \$command
+	, 'file|f=s'     => \$file
 	, 'help|?'       => \$help
 );
 pod2usage(-verbose => 2) if $help;
@@ -32,9 +33,9 @@ my $copy = do {
 	use Regexp::Grammars;
 	qr{
 		(?:
-			(?:<action=(\\?COPY)> <.ws> <table=literal> <.ws> <columns=pcolumns>? FROM <.ws> <source> <.ws> WITH? <.ws> <[with=with_options]> ** \s ) |
+			(?:<action=(\\?COPY)> <.ws> <table=literal> <.ws> <columns=pcolumns>? <.ws> FROM <.ws> <source> <.ws> WITH? <.ws> <[with=with_options]> ** \s ) |
 			(?:<action=(\\ECHO)> <.ws> <string=(.+)> ) |
-			(?:<action=(SET)> <effect=(SET|LOCAL)>? <.ws> <key=literal> <.ws> (TO|=) <.ws> (?:<value=pair>|<value=literal>) )
+			(?:<action=(SET)> <.ws> <effect=(SET|LOCAL)>? <.ws> <key=literal> <.ws> (TO|=) <.ws> (?:<value=pair>|<value=literal>) )
 		)
 
 		<rule: from>              <table=literal> <columns=pcolumns>? FROM <source> (?: WITH? (<[with=with_options]> ** \s)? )?
@@ -64,8 +65,13 @@ my $copy = do {
 	}xmsi;
 };
 
+## Read from file if provided else, read from STDIN
+my $io = $file ? IO::File->new( $file, '<' )
+	: IO::Handle->new->fdopen( fileno(STDIN), 'r' )
+;
+
 ## REPL stuff
-while ( my $input = ( $command || <STDIN> ) ) {
+while ( my $input = ( $command || <$io> ) ) {
 	undef $command;
 	next unless $input =~ /\w/;
 
@@ -74,7 +80,7 @@ while ( my $input = ( $command || <STDIN> ) ) {
 	my $action = lc $/{action};
 	$action =~ s/^\\//;
 
-	my $sub    = "process_action_$action";
+	my $sub = "process_action_$action";
 
 	{
 		no strict 'refs';
@@ -82,6 +88,8 @@ while ( my $input = ( $command || <STDIN> ) ) {
 	}
 
 	undef %/;
+	die 'EOF' if $io->eof;
+
 }
 
 sub process_action_echo {
