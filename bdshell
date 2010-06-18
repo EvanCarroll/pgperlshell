@@ -187,8 +187,8 @@ sub process_copy {
 		}
 
 		$ocsv->combine( @columns );
-		$dbh->pg_putcopydata( $ocsv->string . "\n");
-		#say $ocsv->string;
+		#$dbh->pg_putcopydata( $ocsv->string . "\n");
+		say $ocsv->string;
 	}
 
 	$dbh->pg_putcopyend;
@@ -203,7 +203,7 @@ BrightDog Shell - a shell for Postgresql
 
 =head1 SYOPSIS
 
-	echo \COPY foo FROM test.txt WITH DELIMITER AS '~' CSV HEADER -PERL_RAGGED -TCSV_empty_is_undef | \
+	echo \COPY foo FROM test.txt WITH DELIMITER AS '~' CSV HEADER -PERL_ragged -TCSV_empty_is_undef | \
 		bdshell -U username -d database
 	;
 
@@ -238,14 +238,12 @@ More information can be found here: http://www.postgresql.org/docs/current/inter
 				[ OIDS ]
 				[ DELIMITER [ AS ] 'delimiter' ]
 				[ NULL [ AS ] 'null string' ]
-				[ -PERL_key = value ]
-				[ -PERL_key ]
+				[ -PERL_key [ = value ] ]
 				[ CSV [ HEADER ]
 					[ QUOTE [ AS ] 'quote' ]
 					[ ESCAPE [ AS ] 'escape' ]
 					[ FORCE NOT NULL column [, ...] ]
-					[ -TCSV_key ]
-					[ -TCSV_key = value ]
+					[ -TCSV_key [ = value ] ]
 
 	## COPY .. TO is not yet supported
 	COPY { tablename [ ( column [, ...] ) ] | ( query ) }
