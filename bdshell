@@ -92,9 +92,14 @@ while ( my $input = ( $command || <$io> ) ) {
 
 }
 
+sub process_action_set {
+	my $sql = shift;
+	$dbh->do( sprintf( 'SET %s = %s', map s/;.*//, $sql->{key}, $sql->{value} ) );
+}
+
 sub process_action_echo {
-	my $copy = shift;
-	say $copy->{string};	
+	my $sql = shift;
+	say $sql->{string};	
 }
 
 sub process_action_copy {
