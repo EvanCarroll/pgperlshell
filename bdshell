@@ -28,13 +28,14 @@ my $dbh = DBI->connect("dbi:Pg:dbname=$db", $un, $pw, {RaiseError=>1})
 
 die 'not connected' unless $dbh->ping == 1;
 
-
 my $copy = do {
 	use Regexp::Grammars;
 	qr{
-		<action=(\\COPY)> <from>
+		(?:<action=(\\?COPY)> <.ws> <table=literal> <.ws> <columns=pcolumns>? FROM <.ws> <source> <.ws> WITH? <.ws> <[with=with_options]> ** \s ) |
+		(?:<action=(\\ECHO)> <string=(.*)> ) |
+		(?:<action=(SET)> <effect=(SET|LOCAL)>? <.ws> <key=literal> <.ws> (TO|=) <.ws> (?:<value=pair>|<value=literal>) )
 
-		<rule: from>              <table=literal> <columns=pcolumns>? FROM <source> WITH? (<[with=with_options]> ** \s)?
+		<rule: from>              <table=literal> <columns=pcolumns>? FROM <source> (?: WITH? (<[with=with_options]> ** \s)? )?
 
 		<token: with_options>     binary|oids|<delimiter>|<null>|<header>|<custom_perl>
 		<rule: custom_perl>       -PERL_<key=(\w+)> = <value=pair>|-PERL_<key=(\w+)>
@@ -62,8 +63,9 @@ my $copy = do {
 };
 
 while ( my $input = ( $command || <STDIN> ) ) {
+	say $input;
 	$input =~ $copy;
-	process_copy ( \%/ );
+	process_copy ( XXX \%/ );
 }
 
 sub process_copy {
@@ -72,7 +74,10 @@ sub process_copy {
 	my $tcsv_args = { binary => 1, blank_is_undef => 1 };
 	my $perl_args;
 
-	croak 'Invalid SQL' unless $copy->{action} =~ /COPY/;
+	unless ( $copy->{action} =~ /COPY/ ) {
+		YYY $copy;
+		croak 'Invalid SQL';
+	}
 
 	## SQL processing
 	foreach my $opt ( @{$copy->{from}{with}} ) {
