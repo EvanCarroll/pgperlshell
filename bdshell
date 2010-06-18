@@ -84,13 +84,7 @@ while ( my $input = ( $command || <$io> ) ) {
 
 	{
 		no strict 'refs';
-		if ( my $s = *{"main::$sub"} ) {
-			$s->( \%/ );
-		}
-		else {
-			say 'PASSING OFF $input no idea how to handle it';
-			$dbh->do( $input );
-		}
+		*{"main::$sub"}->( \%/, $input );
 	}
 
 	undef %/;
@@ -234,6 +228,12 @@ sub process_action_copy {
 
 	$dbh->pg_putcopyend;
 
+}
+
+sub AUTOLOAD {
+	my ( $sql, $orig_input ) = @_;
+	say "PASSING OFF [$orig_input] no idea how to handle it";
+	$dbh->do( $orig_input );
 }
 
 __END__
