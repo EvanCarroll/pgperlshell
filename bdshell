@@ -84,7 +84,13 @@ while ( my $input = ( $command || <$io> ) ) {
 
 	{
 		no strict 'refs';
-		*{"main::$sub"}->( \%/ );
+		if ( my $s = *{"main::$sub"} ) {
+			$s->( \%/ );
+		}
+		else {
+			say 'PASSING OFF $input no idea how to handle it';
+			$dbh->do( $input );
+		}
 	}
 
 	undef %/;
