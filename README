@@ -1,0 +1,8 @@
+NAME: BDSHELL
+
+
+DESCRIPTION
+===========
+
+bdshell is a utility with a COPY grammar that uses Text::CSV under the hood. It
+provides additional functionality available to Text::CSV through -[dash] options.
