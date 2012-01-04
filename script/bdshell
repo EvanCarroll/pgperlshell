@@ -1,17 +1,18 @@
 #!/usr/bin/env perl
-use Carp;
+use feature ':5.10';
+use 5.10.0;
 use strict;
 use warnings;
-use autodie;
-use feature ':5.10';
 
-use XXX;
-use Data::Dumper;
+use autodie;
+use Carp;
 use DBD::Pg;
 use Text::CSV;
 use IO::File;
 use Getopt::Long;
 use Pod::Usage;
+
+our $VERSION = '0.01';
 
 my ($un, $db, $pw, $help, $command, $file);
 my $result = GetOptions(
