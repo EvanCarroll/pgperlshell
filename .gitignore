@@ -4,4 +4,6 @@
 /Makefile
 /Makefile.old
 /inc/
-
+*.swp
+pm_to_blib
+/blib
