@@ -11,10 +11,12 @@ use Text::CSV;
 use IO::File;
 use Getopt::Long;
 use Pod::Usage;
+use List::Util;
 
 our $VERSION = '0.01';
 
-my ($un, $db, $pw, $help, $command, $file);
+my ($un, $db, $pw, $help, $command, $file, $DEBUG);
+$DEBUG //= $ENV{DEBUG} || 0;
 my $result = GetOptions(
 	'username|U=s'   => \$un
 	, 'dbname|d=s'   => \$db
@@ -22,31 +24,38 @@ my $result = GetOptions(
 	, 'command|c=s'  => \$command
 	, 'file|f=s'     => \$file
 	, 'help|?'       => \$help
+	, 'debug'        => \$DEBUG
 );
 pod2usage(-verbose => 2) if $help;
 
 my $dbh = DBI->connect("dbi:Pg:dbname=$db", $un, $pw, {RaiseError=>1})
-	or die DBI::errstr;
+	or die DBI::errstr
+;
 
-die 'not connected' unless $dbh->ping == 1;
+if ( $dbh->ping == 1 ) {
+	say 'Connection established' if $DEBUG;
+}
+else {
+	die 'not connected';
+}
 
-my $copy = do {
+my $grammar = do {
 	use Regexp::Grammars;
 	qr{
 		(?:
-			(?:<action=(\\?COPY)> <.ws> <table=literal> <.ws> <columns=pcolumns>? <.ws> FROM <.ws> <source> <.ws> WITH? <.ws> <[with=with_options]> ** \s ) |
-			(?:<action=(\\ECHO)> <.ws> <string=(.+)> ) |
-			(?:<action=(SET)> <.ws> <effect=(SET|LOCAL)>? <.ws> <key=literal> <.ws> (TO|=) <.ws> (?:<value=pair>|<value=literal>) )
+(?:<action=(\\?COPY)> <.ws> <table=literal> <.ws> <columns=pcolumns>? <.ws> FROM <.ws> <source> <.ws> (?: (?:WITH)? <.ws> <[with=with_options]>? ** \s )? ) |
+(?:<action=(\\ECHO)> <.ws> <string=(.+)> ) |
+(?:<action=(SET)> <.ws> <effect=(SET|LOCAL)>? <.ws> <key=literal> <.ws> (TO|=) <.ws> (?:<value=pair>|<value=literal>) )
 		)
 
 		<rule: from>              <table=literal> <columns=pcolumns>? FROM <source> (?: WITH? (<[with=with_options]> ** \s)? )?
 
 		<token: with_options>     binary|oids|<delimiter>|<null>|<header>|<custom_perl>
-		<rule: custom_perl>       -PERL_<key=(\w+)> = <value=pair>|-PERL_<key=(\w+)>
+		<rule: custom_perl>       -PERL_<key=(\w+)> =? <value=pair>|-PERL_<key=(\w+)>
 		<rule: delimiter>         DELIMITER <.as>? <MATCH=pair>
 		<rule: null>              NULL <.as>? <MATCH=pair>
 
-		<rule: header>            CSV ( <[MATCH=header_options]>  ** \s )
+		<rule: header>            (?:CSV)? ( <[MATCH=header_options]>  ** \s )
 		<token: header_options>   header|<quote>|<escape>|<force_not_null>|<custom_tcsv>
 
 		<rule: custom_tcsv>       -TCSV_<key=(\w+)> = <value=pair>|-TCSV_<key=(\w+)>
@@ -57,7 +66,7 @@ my $copy = do {
 		<token: source>           stdin|<MATCH=literal>
 		<token: as>               AS
 
-		<rule: columns>           (<[MATCH=literal]> ** \,)+
+		<rule: columns>           <[MATCH=(\w+)]>+ % ,
 		<rule: pcolumns>          \( <MATCH=columns> \)
 
 		<rule: pair>              <_delim=(\$\$|"|')> <MATCH=(.+?(?=(??{quotemeta $MATCH{_delim}})))> (??{ quotemeta $MATCH{_delim} })
@@ -67,16 +76,26 @@ my $copy = do {
 };
 
 ## Read from file if provided else, read from STDIN
-my $io = $file ? IO::File->new( $file, '<' )
-	: IO::Handle->new->fdopen( fileno(STDIN), 'r' )
-;
+my $io;
+if ( not defined $command ) {
+	if ( $file ) {
+		$io = IO::File->new( $file, '<' );
+		say "Reading from file" if $DEBUG;
+	}
+	else {
+		IO::Handle->new->fdopen( fileno(STDIN), 'r' );
+		say "Falling back to STDIN" if $DEBUG;
+	}
+}
 
 ## REPL stuff
-while ( my $input = ( $command || <$io> ) ) {
+while ( my $input = ( $command || defined $io && $io->getline ) ) {
 	undef $command;
 	next unless $input =~ /\w/;
 
-	$input =~ $copy;
+	say "LINE:\n\t$input" if $DEBUG;
+	
+	$input =~ $grammar;
 
 	my $action = lc $/{action};
 	$action =~ s/^\\//;
@@ -89,7 +108,7 @@ while ( my $input = ( $command || <$io> ) ) {
 	}
 
 	undef %/;
-	die 'EOF' if $io->eof;
+	die 'EOF' if defined $io && $io->eof;
 
 }
 
@@ -105,13 +124,13 @@ sub process_action_echo {
 }
 
 sub process_action_copy {
-	my $copy = shift;
+	my $sql = shift;
 
 	my $tcsv_args = { binary => 1, blank_is_undef => 1 };
 	my $perl_args;
 
 	## SQL processing
-	foreach my $opt ( @{$copy->{from}{with}} ) {
+	foreach my $opt ( @{$sql->{with}} ) {
 		given ( $opt ) {
 			when ( qr/binary/i ) {
 				die 'not handeled'
@@ -157,14 +176,17 @@ sub process_action_copy {
 		}
 	}
 
+	## [I]nput and [O]utput
 	my $icsv = Text::CSV->new($tcsv_args)
 		or die "Cannot use CSV: ".Text::CSV->error_diag()
 	;
 	my $ocsv = Text::CSV->new({binary=>1});
 
-	my $fh  = IO::File->new( $copy->{from}{source}, '<' );
+	my $fh = IO::File->new( $sql->{source}, '<' )
+		or die $!
+	;
 
-	## Discards te header row, and sets Text::CSV's column_names
+	## Discards the header row, and sets Text::CSV's column_names
 	my @header;
 	if ( $perl_args->{header} ) {
 
@@ -175,13 +197,16 @@ sub process_action_copy {
 		
 		$icsv->column_names( @header );
 
+		## This code works if you have a header in the CSV file
+		## and the column list is specified in the copy-command
+		## then, it lines the two up.
 		my @arr;
 		if ( $perl_args->{input_order} !~ /\\/ ) {
 			COL: foreach my $col_name ( @{[split ',\s+', $perl_args->{input_order}]} ) {
 				for ( my $i = 0; $i <= $#header; $i++ ) {
 					if ( $header[$i] eq $col_name ) {
 						push @arr, $i;
-						next COL
+						next COL;
 					}
 				}
 				die "Failed to find column $col_name\n";
@@ -198,33 +223,52 @@ sub process_action_copy {
 	
 	my $new_copy = sprintf (
 		q[ COPY %s %s FROM STDIN WITH CSV QUOTE AS '"' ]
-		, $copy->{from}{table}
-		, exists $copy->{from}{columns} ? '(' . join (', ', @{$copy->{from}{columns}}) . ')' : ''
+		, $sql->{table}
+		, exists $sql->{columns} ? '(' . join (', ', @{$sql->{columns}}) . ')' : ''
 	);
 
 	$dbh->do( $new_copy );
 
-	while ( 1 ) {
+	while ( not $fh->eof ) {
+
 		my $tuple = $icsv->getline($fh);
-		last if $icsv->eof;
+
+		next unless List::Util::first {defined $_} @$tuple;
+
+		if ( $icsv->error_diag ) {
+			my ( $err, $text ) = $icsv->error_diag;
+			warn "Text::CSV ErrorCode: [$err], Meaning: [$text]\n";
+			$icsv->SetDiag(0);
+			next;
+		}
+
 		die $icsv->error_diag if $icsv->error_diag;
 
-		my @columns = @$tuple;
+		my @columns;
+
 		## If you want ragged you've got ragged:
 		if ( $perl_args->{input_order} ) {
 			my @index = ( $perl_args->{input_order} =~ m/\\?(\d+)\s*/g );
-			@columns = map $tuple->[$_], @index;
+			## -1 because 1 is the 0th element in the csv
+			@columns = map $tuple->[$_-1], @index;
+		}
+		else {
+			@columns = @$tuple;
 		}
 
+		## will get around
+		## ERROR:  extra data after last expected column
 		if ( $perl_args->{ragged} ) {
-			if ( $copy->{from}{columns} ) {
-				splice ( @columns, scalar @{$copy->{from}{columns}} );
+			if ( $sql->{columns} ) {
+				splice ( @columns, @{$sql->{columns}}, $#columns , () );
+			}
+			else {
+				die "Failure to specify columns detected, do not know how many columns I should keep in ragged csv\n";
 			}
 		}
 
 		$ocsv->combine( @columns );
-		#$dbh->pg_putcopydata( $ocsv->string . "\n");
-		say $ocsv->string;
+		$dbh->pg_putcopydata( $ocsv->string . "\n" );
 	}
 
 	$dbh->pg_putcopyend;
@@ -257,21 +301,76 @@ Above and beyond the normal COPY syntax BrightDog adds:
 
 =over 4
 
+=item L<Text::CSV> syntax through B<-TCSV_key> or B<-TCSV_key = value>
+
+Example, B<-TCSV_allow_loose_quotes> which allows "Loose Quotes" is very useful.
+
+=item B<-PERL_key> or B<-PERL_key = value>
+
+This is for special Perl extentions some of which are
+
+=over 4
+
+=item B<-PERL_ragged>
+
+Note this option currently requires you to explicitly list the optional columns in your SQL-COPY command
+
+=item B<-PERL_skip_lines>
+
+Skip lines at the top of the file.
+
+=item B<-PERL_header_lowercase>
+
+Transforms the header of the file to lowercase.
+
+=item B<-PERL_input_order>
+
+B<-PERL_input_order> takes two syntaxes:
+
+=over 4
+
 =item
 
-All of the L<Text::CSV> syntax through B<-TCSV_key> or B<-TCSV_key = value> -- B<-TCSV_allow_loose_quotes> is very useful.
+Column-backreference syntax such as C<\3 \2 \1> for the third column, followed by the second, followed by the first. Note the starting column: \1.
 
 =item
 
-Added perl extensions available through B<-PERL_key> or B<-PERL_key = value>. Namely, B<-PERL_ragged>, B<-PERL_skip_lines>, B<-PERL_input_order>.
+Header name syntax 'colname1,colname2,colname3' which will permit you to load them in the order specified with the names of the columns as they apears in the CSV header row - this format also requires HEADER to be specified.
 
-B<-PERL_input_order> will column-backreference syntax such as C<\3 \2 \1> for the third column, followed by the second, followed by the first. This will also accept a syntax 'colname1,colname2,colname3' which will permit you to load them in the order specified with the names of the columns as they apears in the CSV header row - this format also requires HEADER to be specified.
+=back
+
+=back
 
 =back
 
 =head2 COPY
 
 More information can be found here: http://www.postgresql.org/docs/current/interactive/sql-copy.html
+
+	COPY table_name [ ( column [, ...] ) ]
+			FROM { 'filename' | STDIN }
+			[ [ WITH ] ( option [, ...] ) ]
+
+	where option can be one of:
+
+			FORMAT format_name
+			OIDS [ boolean ]
+			DELIMITER 'delimiter_character'
+			NULL 'null_string'
+			HEADER [ boolean ]
+			QUOTE 'quote_character'
+			ESCAPE 'escape_character'
+			FORCE_QUOTE { ( column [, ...] ) | * }
+			FORCE_NOT_NULL ( column [, ...] ) |
+			ENCODING 'encoding_name'
+
+=head1 AUTHOR
+
+Evan Carroll <me at evancarroll.com>
+
+http://www.evancarroll.com
+
+=cut
 
 	COPY tablename [ ( column [, ...] ) ]
 		FROM { 'filename' | STDIN }
@@ -287,21 +386,3 @@ More information can be found here: http://www.postgresql.org/docs/current/inter
 					[ FORCE NOT NULL column [, ...] ]
 					[ -TCSV_key [ = value ] ]
 
-	## COPY .. TO is not yet supported
-	COPY { tablename [ ( column [, ...] ) ] | ( query ) }
-		TO { 'filename' | STDOUT }
-		[ [ WITH ]
-			[ BINARY ]
-			[ OIDS ]
-			[ DELIMITER [ AS ] 'delimiter' ]
-			[ NULL [ AS ] 'null string' ]
-			[ CSV [ HEADER ]
-				[ QUOTE [ AS ] 'quote' ]
-				[ ESCAPE [ AS ] 'escape' ]
-				[ FORCE QUOTE column [, ...] ]
-
-=head1 AUTHOR
-
-Evan Carroll L<me at evancarroll.com>
-
-http://www.evancarroll.com
