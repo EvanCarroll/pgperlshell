@@ -43,7 +43,7 @@ my $grammar = do {
 	use Regexp::Grammars;
 	qr{
 		(?:
-(?:<action=(\\?COPY)> <.ws> <table=literal> <.ws> <columns=pcolumns>? <.ws> FROM <.ws> <source> <.ws> (?: (?:WITH)? <.ws> <[with=with_options]>? ** \s )? ) |
+(?:<action=(\\COPY)> <.ws> <table=literal> <.ws> <columns=pcolumns>? <.ws> FROM <.ws> <source> <.ws> (?: (?:WITH)? <.ws> <[with=with_options]>? ** \s )? ) |
 (?:<action=(\\ECHO)> <.ws> <string=(.+)> ) |
 (?:<action=(SET)> <.ws> <effect=(SET|LOCAL)>? <.ws> <key=literal> <.ws> (TO|=) <.ws> (?:<value=pair>|<value=literal>) )
 		)
@@ -97,18 +97,23 @@ while ( my $input = ( $command || defined $io && $io->getline ) ) {
 	
 	$input =~ $grammar;
 
-	my $action = lc $/{action};
-	$action =~ s/^\\//;
+	if ( my $action = $/{action} ) {
+		my $action = lc $/{action};
+		$action =~ s/^\\//;
 
-	my $sub = "process_action_$action";
+		my $sub = "process_action_$action";
 
-	{
-		no strict 'refs';
-		*{"main::$sub"}->( \%/, $input );
+		{
+			no strict 'refs';
+			*{"main::$sub"}->( \%/, $input );
+		}
+
+		undef %/;
+		die 'EOF' if defined $io && $io->eof;
 	}
-
-	undef %/;
-	die 'EOF' if defined $io && $io->eof;
+	else {
+		_process_default( undef, $input );
+	}
 
 }
 
@@ -183,7 +188,7 @@ sub process_action_copy {
 	my $ocsv = Text::CSV->new({binary=>1});
 
 	my $fh = IO::File->new( $sql->{source}, '<' )
-		or die $!
+		or die "$! " . $sql->{source} . "\n"
 	;
 
 	## Discards the header row, and sets Text::CSV's column_names
@@ -275,10 +280,15 @@ sub process_action_copy {
 
 }
 
+sub _process_default {
+	my ( $sql, $orig_input ) = @_;
+	say "FALL THROUGH:\n\t$orig_input" if $DEBUG;
+	$dbh->do( $orig_input );
+}
+
 sub AUTOLOAD {
 	my ( $sql, $orig_input ) = @_;
-	say "PASSING OFF [$orig_input] no idea how to handle it";
-	$dbh->do( $orig_input );
+	_process_default( $sql, $orig_input );
 }
 
 __END__
