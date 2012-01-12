@@ -204,13 +204,14 @@ sub process_action_copy {
 
 		## This code works if you have a header in the CSV file
 		## and the column list is specified in the copy-command
-		## then, it lines the two up.
+		## then, it resolves the names in input_order to
+		## numerical values
 		my @arr;
 		if ( $perl_args->{input_order} !~ /\\/ ) {
-			COL: foreach my $col_name ( @{[split ',\s+', $perl_args->{input_order}]} ) {
-				for ( my $i = 0; $i <= $#header; $i++ ) {
+			COL: foreach my $col_name ( @{[split ',\s*', $perl_args->{input_order}]} ) {
+				for ( my $i = 0; $i <= @header; $i++ ) {
 					if ( $header[$i] eq $col_name ) {
-						push @arr, $i;
+						push @arr, $i+1; # the \1 is 1 based.
 						next COL;
 					}
 				}
@@ -251,7 +252,6 @@ sub process_action_copy {
 
 		my @columns;
 
-		## If you want ragged you've got ragged:
 		if ( $perl_args->{input_order} ) {
 			my @index = ( $perl_args->{input_order} =~ m/\\?(\d+)\s*/g );
 			## -1 because 1 is the 0th element in the csv
@@ -345,7 +345,7 @@ Column-backreference syntax such as C<\3 \2 \1> for the third column, followed b
 
 =item
 
-Header name syntax 'colname1,colname2,colname3' which will permit you to load them in the order specified with the names of the columns as they apears in the CSV header row - this format also requires HEADER to be specified.
+Header name syntax 'colname1,colname2,colname3' which will permit you to reorder a CSV file. Specified with the names of the columns as they apears in the CSV header row. This format requires (a) header row in the input file, (b) ether HEADER or -PERL_header to be enabled.
 
 =back
 
