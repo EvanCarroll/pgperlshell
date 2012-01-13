@@ -9,6 +9,11 @@ requires 'IO::File';
 requires 'Getopt::Long';
 requires 'Pod::Usage';
 requires 'DBD::Pg';
+requires 'JSON';
+requires 'Text::CSV';
+
+recommends 'Text::CSV_XS';
+recommends 'JSON::XS';
 
 install_script 'bdshell';
 

@@ -12,6 +12,7 @@ use IO::File;
 use Getopt::Long;
 use Pod::Usage;
 use List::Util;
+use JSON;
 
 our $VERSION = '0.01';
 
@@ -54,6 +55,7 @@ my $grammar = do {
 		<rule: custom_perl>     -PERL_<key=(\w+)> =? <value=pair>|-PERL_<key=(\w+)>
 		<rule: custom_tcsv>     -TCSV_<key=(\w+)> = <value=pair>|-TCSV_<key=(\w+)>
 
+		## These are the most current options made available in 9.3
 		<rule: format>          FORMAT <MATCH=literal>
 		<rule: oids>            OIDS <MATCH=boolean>
 		<rule: delimiter>       DELIMITER <MATCH=pair>
@@ -232,6 +234,35 @@ sub process_action_copy {
 
 	$dbh->do( $new_copy );
 
+	my $static_columns_processor;
+	if ( $perl_args->{static_column} ) {
+
+		my $perl_arg = JSON::decode_json( $perl_args->{static_column} );
+
+		my @columns_in_copy = @{$sql->{columns}};
+		my $columns_in_copy = {};
+		## We need to actually know the positions given in the \COPY
+		for ( my $i = 0; $i < @columns_in_copy; $i++ ) {
+			$columns_in_copy->{ $columns_in_copy[$i] } = $i;
+		}
+
+		## These have to be in order so when we generate
+		## splice statements we do ltr
+		my @ordered_args;
+		while ( my ($k, $v) = each %$perl_arg ) {
+			push @ordered_args, [$columns_in_copy->{$k}, $v];
+		}
+		@ordered_args = sort { $a->[0] <=> $b->[0] } @ordered_args;
+
+		$static_columns_processor = sub {
+			my $input = shift;
+			foreach my $splice_arg ( @ordered_args ) {
+				splice ( @$input, $splice_arg->[0], 0, $splice_arg->[1] )
+			}
+		};
+
+	}
+
 	while ( not $fh->eof ) {
 
 		my $tuple = $icsv->getline($fh);
@@ -258,6 +289,10 @@ sub process_action_copy {
 			@columns = @$tuple;
 		}
 
+		$static_columns_processor->(\@columns)
+			if $static_columns_processor
+		;
+
 		## will get around
 		## ERROR:  extra data after last expected column
 		if ( $perl_args->{ragged} ) {
@@ -268,7 +303,7 @@ sub process_action_copy {
 				die "Failure to specify columns detected, do not know how many columns I should keep in ragged csv\n";
 			}
 		}
-
+		
 		$ocsv->combine( @columns );
 		$dbh->pg_putcopydata( $ocsv->string . "\n" );
 	}
@@ -332,19 +367,28 @@ Transforms the header of the file to lowercase.
 
 =item B<-PERL_input_order>
 
+B<PERL_input_order>  will permit you to reorder a CSV file. Specify the names of the columns as they apears in the CSV header row. This format requires (a) header row in the input file, (b) ether HEADER or -PERL_header to be enabled.
+
 B<-PERL_input_order> takes two syntaxes:
 
 =over 4
 
-=item
+=item Column-backreference
 
-Column-backreference syntax such as C<\3 \2 \1> for the third column, followed by the second, followed by the first. Note the starting column: \1.
+Example: C<\3 \2 \1> for the third column, followed by the second, followed by the first. Note the starting column: \1.
 
-=item
+=item Header name syntax
 
-Header name syntax 'colname1,colname2,colname3' which will permit you to reorder a CSV file. Specified with the names of the columns as they apears in the CSV header row. This format requires (a) header row in the input file, (b) ether HEADER or -PERL_header to be enabled.
+Example: 'colname1,colname2,colname3'
 
 =back
+
+=item B<-PERL_static_column>
+
+This option requires you explicitly name the columns in your COPY statement.
+
+B<-PERL_static_column> takes a JSON hash where the keys are column names, and the values are static values. It inserts these left-to-right. -PERL_static_column="{key:0}" will effectively insert a 0 for the column "key".
+
 
 =back
 
