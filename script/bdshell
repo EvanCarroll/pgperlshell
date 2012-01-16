@@ -55,7 +55,7 @@ my $grammar = do {
 		<rule: custom_perl>     -PERL_<key=(\w+)> =? <value=pair>|-PERL_<key=(\w+)>
 		<rule: custom_tcsv>     -TCSV_<key=(\w+)> = <value=pair>|-TCSV_<key=(\w+)>
 
-		## These are the most current options made available in 9.3
+		## These are the most current options made available in 9.1
 		<rule: format>          FORMAT <MATCH=literal>
 		<rule: oids>            OIDS <MATCH=boolean>
 		<rule: delimiter>       DELIMITER <MATCH=pair>
@@ -138,11 +138,18 @@ sub process_action_echo {
 sub process_action_copy {
 	my $sql = shift;
 
-	my $tcsv_args = { binary => 1, blank_is_undef => 1 };
-	my $perl_args;
+	
+	my $format;
+	foreach my $opt ( @{$sql->{with}} ) {
+		$format = $opt->{format} if $opt ~~ qr/format/i;
+	}
 
 	## SQL processing
+	my $perl_args;
+	my $tcsv_args = { binary => 1, blank_is_undef => 1 };
 	foreach my $opt ( @{$sql->{with}} ) {
+		next if $opt ~~ qr/format/;
+		
 		given ( $opt ) {
 			when ( qr/binary|oids|force_not_null|force_quote/i ) {
 				die "Option $opt not yet supported\n";
@@ -150,45 +157,74 @@ sub process_action_copy {
 				## but it requires knowing columns names
 				## Even if not present in the sql command
 			}
-			when ( qr/delimiter/i ) {
-				$tcsv_args->{sep_char} = $opt->{delimiter};
+			when ( qr/header/i ) {
+				$perl_args->{header}=1
 			}
-			when ( qr/null/i ) {
-				$tcsv_args->{empty_is_undef} = 1
-					if $opt->{null}
-				;
-			}
-			when ( qr/quote/i ) {
-				$tcsv_args->{quote_char} = $opt->{quote};
-				# The default escape should be the quote per pg docs
-				$tcsv_args->{escape_char} //= $opt->{quote};
-			}
-			when ( qr/escape/i ) { $tcsv_args->{escape_char} = $opt->{escape} }
-			when ( qr/header/i ) { $perl_args->{header}=1 }
 			when ( qr/perl/i ) {
 				$_=$opt->{custom_perl};
 				$perl_args->{$_->{key}} = $_->{value}//1;
 			}
-			when ( qr/tcsv/i ) {
-				$_=$opt->{custom_tcsv};
-				$tcsv_args->{$_->{key}} = $_->{value}//1;
-			}
-			default {
-				die "Option $opt not supported\n";
-			}
-
 		}
+
+		given ( $format ) {
+			when ( 'csv' ) {
+				given ( $opt ) {
+					when ( qr/delimiter/i ) {
+						$tcsv_args->{sep_char} = $opt->{delimiter};
+					}
+					when ( qr/null/i ) {
+						$tcsv_args->{empty_is_undef} = 1
+							if $opt->{null}
+						;
+					}
+					when ( qr/quote/i ) {
+						$tcsv_args->{quote_char} = $opt->{quote};
+						# The default escape should be the quote per pg docs
+						$tcsv_args->{escape_char} //= $opt->{quote};
+					}
+					when ( qr/escape/i ) {
+						$tcsv_args->{escape_char} = $opt->{escape};
+					}
+					when ( qr/tcsv/i ) {
+						$_=$opt->{custom_tcsv};
+						$tcsv_args->{$_->{key}} = $_->{value}//1;
+					}
+				}
+			}
+			when ( 'fixedwidth' ) {
+				given ( $opt ) {
+					when ( qr/fixedwidth/i ) {
+						$_=$opt->{custom_fixedwidth};
+						$tcsv_args->{$_->{key}} = $_->{value}//1;
+					}
+				}
+			}
+			when ( 'text' ) {
+				## In this format NULL IS \0
+				$opt->{delimiter} = "\t";
+			}
+		}
+			
 	}
+	
+	$dbh->do(
+		sprintf (
+			q[ COPY %s %s FROM STDIN WITH CSV QUOTE AS '"' ]
+			, $sql->{table}
+			, exists $sql->{columns} ? '(' . join (', ', @{$sql->{columns}}) . ')' : ''
+		)
+	);
+
+
+	my $fh = IO::File->new( $sql->{source}, '<' )
+		or die "$! " . $sql->{source} . "\n"
+	;
 
 	## [I]nput and [O]utput
 	my $icsv = Text::CSV->new($tcsv_args)
 		or die "Cannot use CSV: ".Text::CSV->error_diag()
 	;
 	my $ocsv = Text::CSV->new({binary=>1});
-
-	my $fh = IO::File->new( $sql->{source}, '<' )
-		or die "$! " . $sql->{source} . "\n"
-	;
 
 	## Discards the header row, and sets Text::CSV's column_names
 	my @header;
@@ -226,14 +262,6 @@ sub process_action_copy {
 		$fh->getline while $perl_args->{skip_lines}--;
 	}
 	
-	my $new_copy = sprintf (
-		q[ COPY %s %s FROM STDIN WITH CSV QUOTE AS '"' ]
-		, $sql->{table}
-		, exists $sql->{columns} ? '(' . join (', ', @{$sql->{columns}}) . ')' : ''
-	);
-
-	$dbh->do( $new_copy );
-
 	my $static_columns_processor;
 	if ( $perl_args->{static_column} ) {
 
@@ -257,6 +285,7 @@ sub process_action_copy {
 		$static_columns_processor = sub {
 			my $input = shift;
 			foreach my $splice_arg ( @ordered_args ) {
+				no warnings;
 				splice ( @$input, $splice_arg->[0], 0, $splice_arg->[1] )
 			}
 		};
@@ -275,8 +304,6 @@ sub process_action_copy {
 			$icsv->SetDiag(0);
 			next;
 		}
-
-		die $icsv->error_diag if $icsv->error_diag;
 
 		my @columns;
 
