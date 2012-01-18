@@ -6,14 +6,9 @@ use warnings;
 
 use bdshell::Backend;
 use autodie;
-use Carp;
-use DBD::Pg;
-use Text::CSV;
 use IO::File;
 use Getopt::Long;
 use Pod::Usage;
-use List::Util;
-use JSON;
 
 our $VERSION = '0.01';
 
