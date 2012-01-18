@@ -15,7 +15,7 @@ has '_dbh' => (
 	, default => sub {
 		my $self = shift;
 		my $db = $self->_db;
-		my $dbh = DBI->connect_cached("dbi:Pg:dbname=$db"
+		state $dbh = DBI->connect_cached("dbi:Pg:dbname=$db"
 			, $self->_un
 			, $self->_pw, {RaiseError=>1}
 		) or die $DBI::errstr;
