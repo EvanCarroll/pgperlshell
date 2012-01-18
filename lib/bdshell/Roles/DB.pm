@@ -3,6 +3,8 @@ use strict;
 use warnings;
 use Moose::Role;
 
+use DBD::Pg;
+
 use feature ':5.10';
 use v5.10;
 
